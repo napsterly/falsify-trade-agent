@@ -1,0 +1,4 @@
+interface:
+  display_name: "FALSIFY Trade Warrant"
+  short_description: "Adversarially test a Binance trade thesis before approval"
+  default_prompt: "Use $falsify-trade-warrant to challenge this trade idea and create a bounded Binance MCP warrant only if it survives."
