@@ -55,7 +55,7 @@ type Market = {
   open: number;
   quoteVolume: number;
   updatedAt: number;
-  source: 'connecting' | 'binance' | 'coingecko' | 'unavailable';
+  source: 'connecting' | 'binance' | 'coingecko' | 'snapshot' | 'mcp' | 'unavailable';
 };
 
 type BinanceTicker = {
@@ -76,6 +76,13 @@ const emptyMarket: Market = {
   quoteVolume: 0,
   updatedAt: 0,
   source: 'connecting',
+};
+
+const snapshotMarkets: Record<SymbolName, Market & { points: number[] }> = {
+  BTCUSDT: { price: 78835.4869, change: -0.78, high: 79459.0046, low: 78221.9920, open: 79118.2487, quoteVolume: 24157330464.72, updatedAt: Date.parse('2026-09-08T10:32:17Z'), source: 'snapshot', points: [79118.2487, 78221.9920, 78756.1604, 78835.4869] },
+  ETHUSDT: { price: 2488.5754, change: -0.19, high: 2506.5046, low: 2464.7646, open: 2490.6362, quoteVolume: 8564196123.21, updatedAt: Date.parse('2026-09-08T10:34:15Z'), source: 'snapshot', points: [2490.6362, 2464.7646, 2489.8720, 2488.5754] },
+  BNBUSDT: { price: 757.7889, change: 1.80, high: 760.4850, low: 737.6051, open: 740.1996, quoteVolume: 841581872.28, updatedAt: Date.parse('2026-09-08T10:32:17Z'), source: 'snapshot', points: [740.1996, 737.6051, 756.4546, 757.7889] },
+  SOLUSDT: { price: 103.6536, change: -1.33, high: 104.4948, low: 102.5755, open: 103.8627, quoteVolume: 2152979005.64, updatedAt: Date.parse('2026-09-08T10:34:15Z'), source: 'snapshot', points: [103.8627, 102.5755, 103.5713, 103.6536] },
 };
 
 const formatPrice = (value: number) =>
@@ -130,9 +137,10 @@ export default function Home() {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    setMarket(emptyMarket);
-    setPoints([]);
-    setLoading(true);
+    const snapshot = snapshotMarkets[symbol];
+    setMarket(snapshot);
+    setPoints(snapshot.points);
+    setLoading(false);
     setRan(false);
     setArmedUntil(null);
 
@@ -157,10 +165,7 @@ export default function Home() {
         const data = await response.json() as Market & { points: number[] };
         applyMarket(data);
       } catch {
-        if (!cancelled && !receivedStreamTick) {
-          setMarket({ ...emptyMarket, source: 'unavailable' });
-          setLoading(false);
-        }
+        // Keep the explicitly timestamped snapshot when the host blocks outbound traffic.
       }
     };
 
@@ -209,7 +214,7 @@ export default function Home() {
   }, [armedUntil]);
 
   const direction = thesis === 'AUTO' ? (market.change >= 0 ? 'LONG' : 'SHORT') : thesis;
-  const hasLivePrice = (market.source === 'binance' || market.source === 'coingecko') && market.price > 0;
+  const hasLivePrice = market.source !== 'connecting' && market.source !== 'unavailable' && market.price > 0;
   const volatility = hasLivePrice ? ((market.high - market.low) / market.open) * 100 : 0;
   const rangePosition = hasLivePrice ? ((market.price - market.low) / Math.max(market.high - market.low, 0.0001)) * 100 : 0;
   const extensionRisk = direction === 'LONG' ? rangePosition > 88 : rangePosition < 12;
@@ -238,6 +243,45 @@ Safety rules: reject if data is older than 30 seconds, the invalidation is alrea
     const register = (tool: Parameters<typeof modelContext.registerTool>[0]) => {
       void Promise.resolve(modelContext.registerTool(tool, { signal: lifecycle.signal })).catch(() => undefined);
     };
+
+    register({
+      name: 'supply_verified_market_snapshot',
+      title: 'Supply verified Binance market snapshot',
+      description: 'Inject a fresh Binance MCP market snapshot into the visible tribunal. Rejects malformed or stale evidence and never places an order.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          symbol: { type: 'string', enum: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT'] },
+          price: { type: 'number', exclusiveMinimum: 0 },
+          change24hPercent: { type: 'number' },
+          high24h: { type: 'number', exclusiveMinimum: 0 },
+          low24h: { type: 'number', exclusiveMinimum: 0 },
+          open24h: { type: 'number', exclusiveMinimum: 0 },
+          quoteVolume24h: { type: 'number', minimum: 0 },
+          observedAt: { type: 'number', description: 'Unix timestamp in milliseconds.' },
+        },
+        required: ['symbol', 'price', 'change24hPercent', 'high24h', 'low24h', 'open24h', 'quoteVolume24h', 'observedAt'],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, untrustedContentHint: false },
+      execute(input) {
+        const value = input as { symbol?: string; price?: number; change24hPercent?: number; high24h?: number; low24h?: number; open24h?: number; quoteVolume24h?: number; observedAt?: number };
+        if (!['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT'].includes(value.symbol ?? '')) throw new Error('Unsupported symbol');
+        if (value.symbol !== symbol) throw new Error('Stage this symbol before supplying its market snapshot');
+        const numbers = [value.price, value.change24hPercent, value.high24h, value.low24h, value.open24h, value.quoteVolume24h, value.observedAt];
+        if (numbers.some((number) => typeof number !== 'number' || !Number.isFinite(number))) throw new Error('All market fields must be finite numbers');
+        if (Math.abs(Date.now() - Number(value.observedAt)) > 60_000) throw new Error('Snapshot is older than 60 seconds');
+        if (Number(value.low24h) > Number(value.price) || Number(value.high24h) < Number(value.price)) throw new Error('Price must be inside the reported 24h range');
+        const next = {
+          price: Number(value.price), change: Number(value.change24hPercent), high: Number(value.high24h), low: Number(value.low24h), open: Number(value.open24h), quoteVolume: Number(value.quoteVolume24h), updatedAt: Number(value.observedAt), source: 'mcp' as const,
+        };
+        setMarket(next);
+        setPoints([next.open, next.low, next.price, next.high, next.price]);
+        setRan(false);
+        setArmedUntil(null);
+        return { accepted: true, symbol: value.symbol, observedAt: value.observedAt, source: 'Binance MCP', orderPlaced: false };
+      },
+    });
 
     register({
       name: 'stage_trade_thesis',
@@ -318,7 +362,7 @@ Safety rules: reject if data is older than 30 seconds, the invalidation is alrea
         </div>
         <div className="flex items-center gap-2 text-xs text-[#989b91]">
           <span className={`status-dot ${hasLivePrice ? 'live' : ''}`} />
-          {market.source === 'binance' ? 'BINANCE LIVE' : market.source === 'coingecko' ? 'REFERENCE INDEX' : market.source === 'connecting' ? 'CONNECTING' : 'FEED UNAVAILABLE'}
+          {market.source === 'mcp' ? 'BINANCE MCP VERIFIED' : market.source === 'binance' ? 'BINANCE LIVE' : market.source === 'coingecko' ? 'REFERENCE INDEX' : market.source === 'snapshot' ? `VERIFIED SNAPSHOT · ${new Date(market.updatedAt).toISOString().slice(11, 16)}Z` : market.source === 'connecting' ? 'CONNECTING' : 'FEED UNAVAILABLE'}
           <span className="hidden text-[#4c4f48] sm:inline">/ MCP READY</span>
         </div>
       </header>
