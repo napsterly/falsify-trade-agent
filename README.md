@@ -6,6 +6,8 @@ FALSIFY is a Binance Agent OS workflow for adversarial pre-trade reasoning. Inst
 
 Built for the Binance Agent OS Mini Hackathon — Track A.
 
+**Live demo:** https://falsify-trade-agent.vercel.app/
+
 ## Why it is different
 
 Most trading agents answer: “Why should I trade?” FALSIFY begins with the opposite question: “What observable evidence would prove this trade wrong right now?”
