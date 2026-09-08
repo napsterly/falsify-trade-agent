@@ -37,7 +37,7 @@ BINANCE MCP APPROVAL ── execute or revoke
 
 ## What is included
 
-- A responsive control-plane dashboard with live Binance public market data and a deterministic fallback for demos.
+- A responsive control-plane dashboard that retrieves Binance market data server-side, with a clearly labeled CoinGecko reference-index fallback when Binance market hosts are unreachable. It never substitutes a fabricated price.
 - An installable Codex skill at `agent-skill/falsify-trade-warrant` that defines the adversarial tribunal and Binance MCP execution contract.
 - WebMCP tools for agents to stage a thesis and run the same tribunal shown in the interface.
 - A copyable Binance MCP handoff that contains the warrant and all safety invariants.

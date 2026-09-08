@@ -55,14 +55,27 @@ type Market = {
   open: number;
   quoteVolume: number;
   updatedAt: number;
-  source: 'live' | 'demo';
+  source: 'connecting' | 'binance' | 'coingecko' | 'unavailable';
 };
 
-const demoMarkets: Record<SymbolName, Market> = {
-  BTCUSDT: { price: 79482.31, change: 2.14, high: 81204, low: 77112, open: 77817, quoteVolume: 2840000000, updatedAt: Date.now(), source: 'demo' },
-  ETHUSDT: { price: 3184.22, change: 1.27, high: 3268, low: 3088, open: 3144, quoteVolume: 1670000000, updatedAt: Date.now(), source: 'demo' },
-  BNBUSDT: { price: 918.76, change: 3.42, high: 936, low: 878, open: 888, quoteVolume: 612000000, updatedAt: Date.now(), source: 'demo' },
-  SOLUSDT: { price: 184.09, change: -1.16, high: 190.4, low: 179.8, open: 186.25, quoteVolume: 928000000, updatedAt: Date.now(), source: 'demo' },
+type BinanceTicker = {
+  c: string;
+  P: string;
+  h: string;
+  l: string;
+  o: string;
+  q: string;
+};
+
+const emptyMarket: Market = {
+  price: 0,
+  change: 0,
+  high: 0,
+  low: 0,
+  open: 0,
+  quoteVolume: 0,
+  updatedAt: 0,
+  source: 'connecting',
 };
 
 const formatPrice = (value: number) =>
@@ -107,50 +120,81 @@ export default function Home() {
   const [symbol, setSymbol] = useState<SymbolName>('BNBUSDT');
   const [thesis, setThesis] = useState<Thesis>('AUTO');
   const [notional, setNotional] = useState(100);
-  const [market, setMarket] = useState<Market>(demoMarkets.BNBUSDT);
-  const [points, setPoints] = useState<number[]>([882, 889, 886, 901, 898, 906, 912, 909, 918, 921, 916, 924]);
-  const [loading, setLoading] = useState(false);
+  const [market, setMarket] = useState<Market>(emptyMarket);
+  const [points, setPoints] = useState<number[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [feedKey, setFeedKey] = useState(0);
   const [ran, setRan] = useState(false);
   const [armedUntil, setArmedUntil] = useState<number | null>(null);
   const [seconds, setSeconds] = useState(0);
   const [copied, setCopied] = useState(false);
 
-  const loadMarket = async (nextSymbol = symbol) => {
+  useEffect(() => {
+    setMarket(emptyMarket);
+    setPoints([]);
     setLoading(true);
     setRan(false);
     setArmedUntil(null);
-    try {
-      const [tickerResponse, klinesResponse] = await Promise.all([
-        fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${nextSymbol}`),
-        fetch(`https://api.binance.com/api/v3/klines?symbol=${nextSymbol}&interval=1h&limit=24`),
-      ]);
-      if (!tickerResponse.ok || !klinesResponse.ok) throw new Error('Market feed unavailable');
-      const ticker = await tickerResponse.json();
-      const klines = (await klinesResponse.json()) as Array<Array<string | number>>;
-      setMarket({
-        price: Number(ticker.lastPrice),
-        change: Number(ticker.priceChangePercent),
-        high: Number(ticker.highPrice),
-        low: Number(ticker.lowPrice),
-        open: Number(ticker.openPrice),
-        quoteVolume: Number(ticker.quoteVolume),
-        updatedAt: Date.now(),
-        source: 'live',
-      });
-      setPoints(klines.map((row) => Number(row[4])));
-    } catch {
-      const fallback = { ...demoMarkets[nextSymbol], updatedAt: Date.now() };
-      setMarket(fallback);
-      setPoints(Array.from({ length: 18 }, (_, i) => fallback.open + ((fallback.price - fallback.open) * i) / 17 + Math.sin(i * 1.8) * fallback.price * 0.003));
-    } finally {
-      setLoading(false);
-    }
-  };
 
-  useEffect(() => {
-    loadMarket(symbol);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol]);
+    let cancelled = false;
+    let receivedStreamTick = false;
+    const aborter = new AbortController();
+
+    const applyMarket = (data: Market & { points?: number[] }) => {
+      if (cancelled) return;
+      setMarket(data);
+      setPoints((current) => data.points?.length ? data.points : current);
+      setLoading(false);
+    };
+
+    const loadFallback = async () => {
+      try {
+        const response = await fetch(`/api/market?symbol=${symbol}`, {
+          cache: 'no-store',
+          signal: aborter.signal,
+        });
+        if (!response.ok) throw new Error('Market feed unavailable');
+        const data = await response.json() as Market & { points: number[] };
+        applyMarket(data);
+      } catch {
+        if (!cancelled && !receivedStreamTick) {
+          setMarket({ ...emptyMarket, source: 'unavailable' });
+          setLoading(false);
+        }
+      }
+    };
+
+    const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@ticker`);
+    stream.onmessage = (event) => {
+      const ticker = JSON.parse(event.data) as BinanceTicker;
+      const price = Number(ticker.c);
+      if (!Number.isFinite(price) || price <= 0) return;
+      receivedStreamTick = true;
+      applyMarket({
+        price,
+        change: Number(ticker.P),
+        high: Number(ticker.h),
+        low: Number(ticker.l),
+        open: Number(ticker.o),
+        quoteVolume: Number(ticker.q),
+        updatedAt: Date.now(),
+        source: 'binance',
+      });
+      setPoints((current) => [...current.slice(-46), price]);
+    };
+    stream.onerror = () => void loadFallback();
+
+    const fallbackTimer = window.setTimeout(() => {
+      if (!receivedStreamTick) void loadFallback();
+    }, 3500);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(fallbackTimer);
+      stream.close();
+      aborter.abort();
+    };
+  }, [feedKey, symbol]);
 
   useEffect(() => {
     if (!armedUntil) return;
@@ -165,8 +209,9 @@ export default function Home() {
   }, [armedUntil]);
 
   const direction = thesis === 'AUTO' ? (market.change >= 0 ? 'LONG' : 'SHORT') : thesis;
-  const volatility = ((market.high - market.low) / market.open) * 100;
-  const rangePosition = ((market.price - market.low) / Math.max(market.high - market.low, 0.0001)) * 100;
+  const hasLivePrice = (market.source === 'binance' || market.source === 'coingecko') && market.price > 0;
+  const volatility = hasLivePrice ? ((market.high - market.low) / market.open) * 100 : 0;
+  const rangePosition = hasLivePrice ? ((market.price - market.low) / Math.max(market.high - market.low, 0.0001)) * 100 : 0;
   const extensionRisk = direction === 'LONG' ? rangePosition > 88 : rangePosition < 12;
   const momentumConflict = direction === 'LONG' ? market.change < 0 : market.change > 0;
   const volatilityRisk = volatility > 10;
@@ -272,8 +317,8 @@ Safety rules: reject if data is older than 30 seconds, the invalidation is alrea
           </div>
         </div>
         <div className="flex items-center gap-2 text-xs text-[#989b91]">
-          <span className={`status-dot ${market.source === 'live' ? 'live' : ''}`} />
-          {market.source === 'live' ? 'BINANCE LIVE' : 'DEMO FEED'}
+          <span className={`status-dot ${hasLivePrice ? 'live' : ''}`} />
+          {market.source === 'binance' ? 'BINANCE LIVE' : market.source === 'coingecko' ? 'REFERENCE INDEX' : market.source === 'connecting' ? 'CONNECTING' : 'FEED UNAVAILABLE'}
           <span className="hidden text-[#4c4f48] sm:inline">/ MCP READY</span>
         </div>
       </header>
@@ -322,9 +367,9 @@ Safety rules: reject if data is older than 30 seconds, the invalidation is alrea
               <span>MAX LOSS AT INVALIDATION</span>
               <strong>${maxLoss.toFixed(2)}</strong>
             </div>
-            <Button onClick={() => setRan(true)} disabled={loading} className="tribunal-button">
+            <Button onClick={() => setRan(true)} disabled={loading || !hasLivePrice} className="tribunal-button">
               {loading ? <RefreshCw className="animate-spin" /> : <Gavel />}
-              {loading ? 'Gathering evidence' : 'Run adversarial tribunal'}
+              {loading ? 'Gathering evidence' : hasLivePrice ? 'Run adversarial tribunal' : 'Live data required'}
             </Button>
             <p className="microcopy">Analysis only. No order can be placed from this screen.</p>
           </aside>
@@ -333,15 +378,15 @@ Safety rules: reject if data is older than 30 seconds, the invalidation is alrea
             <div className="market-head">
               <div>
                 <span className="asset-label">{symbol.replace('USDT', '')} / USDT</span>
-                <div className="price-row"><strong>${formatPrice(market.price)}</strong><span className={market.change >= 0 ? 'positive' : 'negative'}>{market.change >= 0 ? <ArrowUpRight /> : <ArrowDownRight />}{Math.abs(market.change).toFixed(2)}%</span></div>
+                <div className="price-row"><strong>{hasLivePrice ? `$${formatPrice(market.price)}` : '—'}</strong>{hasLivePrice && <span className={market.change >= 0 ? 'positive' : 'negative'}>{market.change >= 0 ? <ArrowUpRight /> : <ArrowDownRight />}{Math.abs(market.change).toFixed(2)}%</span>}</div>
               </div>
-              <button className="refresh-button" onClick={() => loadMarket()} aria-label="Refresh Binance market data"><RefreshCw size={15} className={loading ? 'animate-spin' : ''} /></button>
+              <button className="refresh-button" onClick={() => setFeedKey((key) => key + 1)} aria-label="Reconnect Binance market data"><RefreshCw size={15} className={loading ? 'animate-spin' : ''} /></button>
             </div>
             <Sparkline points={points} positive={market.change >= 0} />
             <div className="market-stats">
-              <div><span>24H HIGH</span><strong>${formatPrice(market.high)}</strong></div>
-              <div><span>24H LOW</span><strong>${formatPrice(market.low)}</strong></div>
-              <div><span>QUOTE VOLUME</span><strong>${compact(market.quoteVolume)}</strong></div>
+              <div><span>24H HIGH</span><strong>{hasLivePrice ? `$${formatPrice(market.high)}` : '—'}</strong></div>
+              <div><span>24H LOW</span><strong>{hasLivePrice ? `$${formatPrice(market.low)}` : '—'}</strong></div>
+              <div><span>QUOTE VOLUME</span><strong>{hasLivePrice ? `$${compact(market.quoteVolume)}` : '—'}</strong></div>
             </div>
 
             <div className="tribunal-grid">
