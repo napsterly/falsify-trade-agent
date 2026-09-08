@@ -37,9 +37,9 @@ BINANCE MCP APPROVAL ── execute or revoke
 
 ## What is included
 
-- A responsive control-plane dashboard that retrieves Binance market data server-side, with a clearly labeled CoinGecko reference-index fallback when Binance market hosts are unreachable. It never substitutes a fabricated price.
+- A responsive control-plane dashboard that prefers Binance's live ticker stream, then a server-side public-index chain. Restricted hosts boot from an explicitly timestamped verified snapshot instead of substituting a fabricated price.
 - An installable Codex skill at `agent-skill/falsify-trade-warrant` that defines the adversarial tribunal and Binance MCP execution contract.
-- WebMCP tools for agents to stage a thesis and run the same tribunal shown in the interface.
+- WebMCP tools for agents to stage a thesis, inject a fresh Binance MCP market snapshot (rejected when older than 60 seconds), and run the same tribunal shown in the interface.
 - A copyable Binance MCP handoff that contains the warrant and all safety invariants.
 
 No API keys or exchange credentials are stored by the app. The dashboard cannot place orders.
@@ -62,8 +62,9 @@ Open the local URL, choose a market and direction, set a notional ceiling, and r
 3. Run the tribunal and show the advocate and prosecutor using the same Binance evidence.
 4. Change direction to contradict momentum and demonstrate a rejected trade.
 5. Return to “Follow evidence,” create the warrant, and show its countdown.
-6. Copy the handoff into Codex or ChatGPT with Binance MCP connected.
-7. Show that MCP refreshes the evidence and presents the exact order for human approval rather than executing silently.
+6. Ask Binance MCP for the fresh 24-hour ticker and pass it to `supply_verified_market_snapshot`; the dashboard visibly switches to “BINANCE MCP VERIFIED.”
+7. Run the tribunal, arm the warrant, and copy the handoff into the connected agent.
+8. Show that MCP revalidates the evidence and presents the exact order for human approval rather than executing silently.
 
 ## Safety boundary
 
